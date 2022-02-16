@@ -6,8 +6,12 @@ __pycache__/
 # C extensions
 *.so
 
+# SQLite file
+*.sqlite3
+
 # IDE
 *.vscode/*
+*.idea/*
 
 # Distribution / packaging
 .Python
