@@ -59,7 +59,7 @@ Parameters:
     NoEcho: true
     MinLength: 40
     MaxLength: 40
-    AllowedPattern: "[a-z0-9]*"
+    AllowedPattern: "[_a-zA-Z0-9]*"
 
   ApplicationTag:
     Type: String
@@ -174,7 +174,7 @@ Resources:
   ArtifactS3Bucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub '${AppName}-${AWS::AccountId}-${AWS::Region}--artifacts'
+      BucketName: !Sub '${AppName}-${AWS::AccountId}-${AWS::Region}-artifacts'
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
