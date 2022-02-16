@@ -1,0 +1,337 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Create an ECR Pipeline for Scape application workflow
+
+#####################################################
+# Cloudformation template for Scape ECR repository and 
+# codepipeline workflow
+#####################################################
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Parameters:
+          - AppName
+        Label:
+          default: "Task information"
+
+      - Parameters:
+          - GitHubOwner
+          - GitHubRepository
+          - BranchName
+          - GitHubPAToken
+        Label:
+          default: "GitHub information"
+
+      - Parameters:
+          - ApplicationTag
+          - KeyContactTag
+          - EnvironmentTag
+        Label:
+          default: "Tags"
+
+Parameters:
+  BranchName:
+    Description: GitHub branch name
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+
+  AppName:
+    Type: String
+    Description: Application Name (This will be used for the ECR repository name as well)
+    MinLength: 1
+
+  GitHubRepository:
+    Type: String
+    Description: Repository name where the task lives
+    MinLength: 1
+
+  GitHubOwner:
+    Type: String
+    AllowedPattern: "[A-Za-z0-9-]+"
+    Default: Arijit18
+
+  GitHubPAToken:
+    Type: String
+    Description: Personal Access Token to access repositories and create webhooks (must have admin:repo_hook, repo permissions)
+    NoEcho: true
+    MinLength: 40
+    MaxLength: 40
+    AllowedPattern: "[a-z0-9]*"
+
+  ApplicationTag:
+    Type: String
+    Description: application tags more of a human readable name
+    MinLength: 1
+    Default: Scape
+
+  EnvironmentTag:
+    Description: Environment tag
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+
+  KeyContactTag:
+    Type: String
+    Description: key_contact tag
+    MinLength: 1
+    Default: arijitdas1991@gmail.com
+
+Resources:
+
+  ##################################################
+  # Main role to control resources
+  #
+  StackMainRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+                - cloudformation.amazonaws.com
+                - codebuild.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: !Sub '${AppName}-service-role'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'codecommit:CancelUploadArchive'
+                  - 'codecommit:GetBranch'
+                  - 'codecommit:GetCommit'
+                  - 'codecommit:GetUploadArchiveStatus'
+                  - 'codecommit:UploadArchive'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'codedeploy:CreateDeployment'
+                  - 'codedeploy:GetApplicationRevision'
+                  - 'codedeploy:GetDeployment'
+                  - 'codedeploy:GetDeploymentConfig'
+                  - 'codedeploy:RegisterApplicationRevision'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'codebuild:BatchGetBuilds'
+                  - 'codebuild:StartBuild'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'devicefarm:ListProjects'
+                  - 'devicefarm:ListDevicePools'
+                  - 'devicefarm:GetRun'
+                  - 'devicefarm:GetUpload'
+                  - 'devicefarm:CreateUpload'
+                  - 'devicefarm:ScheduleRun'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'iam:PassRole'
+                  - 'iam:GetRole'
+                  - 'iam:CreateRole'
+                  - 'iam:AttachRolePolicy'
+                  - 'iam:DetachRolePolicy'
+                  - 'iam:DeleteRole'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'elasticbeanstalk:*'
+                  - 'ec2:*'
+                  - 'elasticloadbalancing:*'
+                  - 'autoscaling:*'
+                  - 'cloudwatch:*'
+                  - 's3:*'
+                  - 'sns:*'
+                  - 'logs:*'
+                  - 'cloudformation:*'
+                  - 'rds:*'
+                  - 'sqs:*'
+                  - 'ecs:*'
+                  - 'ecr:*'
+                Resource: '*'
+  ###################################################
+  # Webhook to add to the GitHub repository
+  GitHubSecret:
+    Type: "AWS::SecretsManager::Secret"
+    Properties:
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: "SecretToken"
+        ExcludePunctuation: true
+        PasswordLength: 40
+  
+  ArtifactS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AppName}-${AWS::AccountId}-${AWS::Region}--artifacts'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  AppPipelineWebhook:
+    DependsOn: Pipeline
+    Type: AWS::CodePipeline::Webhook
+    Properties:
+      Authentication: GITHUB_HMAC
+      AuthenticationConfiguration:
+        SecretToken: !Join ['', ['{{resolve:secretsmanager:', !Ref GitHubSecret, ':SecretString:SecretToken}}' ]]
+      Filters:
+        - JsonPath: $.ref
+          MatchEquals: refs/heads/{Branch}
+      TargetPipeline: !Ref Pipeline
+      TargetAction: SourceAction
+      Name: !Sub '${AppName}-webhook'
+      TargetPipelineVersion: !GetAtt Pipeline.Version
+      RegisterWithThirdParty: true
+
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub "${AppName}-${BranchName}"
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+        - Key: application
+          Value: !Ref ApplicationTag
+        - Key: environment
+          Value: !Ref EnvironmentTag
+        - Key: key_contact
+          Value: !Ref KeyContactTag
+
+  CodeBuildDocker:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${AppName}-${BranchName}-codebuild'
+      Description: Build the Docker image for the task
+      ServiceRole: !GetAtt
+        - StackMainRole
+        - Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: 'LINUX_CONTAINER'
+        ComputeType: 'BUILD_GENERAL1_SMALL'
+        Image: 'aws/codebuild/standard:3.0'
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: IMAGE_REPO_NAME
+            Value: !Sub "${AppName}-${BranchName}"
+          - Name: IMAGE_TAG
+            Value: latest
+          - Name: REPOSITORY
+            Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com"
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          phases:
+            install:
+                runtime-versions:
+                  docker: 18
+            pre_build:
+              commands:
+                - echo Logging in to Amazon ECR...
+                - $(aws ecr get-login --no-include-email --region $AWS_DEFAULT_REGION)
+                - BUILD_TIMESTAMP=$(date -u '+%Y%m%d%H%M')
+                - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+            build:
+              commands:
+                - echo Build started on `date`
+                - echo Building the Docker image...
+                - docker build --no-cache --build-arg REPOSITORY=$REPOSITORY -t $IMAGE_REPO_NAME:$IMAGE_TAG .
+                - docker tag $IMAGE_REPO_NAME:$IMAGE_TAG $REPOSITORY/$IMAGE_REPO_NAME:$IMAGE_TAG
+                - docker tag $IMAGE_REPO_NAME:$IMAGE_TAG $REPOSITORY/$IMAGE_REPO_NAME:$BUILD_TIMESTAMP-$COMMIT_HASH
+            post_build:
+              commands:
+                - echo Build completed on `date`
+                - echo Pushing the Docker image...
+                - docker push $REPOSITORY/$IMAGE_REPO_NAME:$IMAGE_TAG
+                - docker push $REPOSITORY/$IMAGE_REPO_NAME:$BUILD_TIMESTAMP-$COMMIT_HASH
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+        - Key: application
+          Value: !Ref ApplicationTag
+        - Key: environment
+          Value: !Ref EnvironmentTag
+        - Key: key_contact
+          Value: !Ref KeyContactTag
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactS3Bucket
+      Name: !Sub '${AppName}-${BranchName}-pipeline'
+      RoleArn: !GetAtt
+        - StackMainRole
+        - Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - InputArtifacts: []
+              Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: '1'
+                Provider: GitHub
+              OutputArtifacts:
+                - Name: GHSourceArtifact
+              Configuration:
+                Owner: !Ref GitHubOwner
+                Repo: !Ref GitHubRepository
+                Branch: !Ref BranchName
+                OAuthToken: !Ref GitHubPAToken
+                PollForSourceChanges: false
+              RunOrder: 1
+
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: GHSourceArtifact
+              OutputArtifacts:
+                - Name: CBBuildArtifact
+              Configuration:
+                ProjectName: !Ref CodeBuildDocker
+              RunOrder: 1
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+        - Key: application
+          Value: !Ref ApplicationTag
+        - Key: environment
+          Value: !Ref EnvironmentTag
+        - Key: key_contact
+          Value: !Ref KeyContactTag
