@@ -1,10 +1,10 @@
-name: Scape Prod CI
+name: Scape Dev CI
 
 on:
   push:
-    branches: [ prod ]
+    branches: [ dev ]
   pull_request:
-    branches: [ prod ]
+    branches: [ dev ]
 
 jobs:
   build:
@@ -33,4 +33,3 @@ jobs:
     - name: Run Tests
       run: |
         echo "Successful"
-        
